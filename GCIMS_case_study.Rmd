@@ -107,19 +107,19 @@ dataset
 
 
 ```{r}
-Sample_1 <- dataset$getSample(sample = "220221_151456")
+Sample1 <- dataset$getSample(sample = "220221_151456")
 
-dt_k1 <- dtime(Sample_1)
-tis_k1 <- getTIS(Sample_1)
-ggplot(dplyr::filter(data.frame(x = dt_k1, y = tis_k1), x >1)) + 
+dt_s1 <- dtime(Sample1)
+tis_s1 <- getTIS(Sample1)
+ggplot(dplyr::filter(data.frame(x = dt_s1, y = tis_s1), x >1)) + 
   geom_line(aes(x = x, y = y)) +
   scale_x_continuous(name = "Drift time (ms)", limits = c(7, 17)) +
   scale_y_continuous(name = "Intensity (a.u)", trans = cubic_root_trans())
 
-rt_k1 <- rtime(Sample_1)
-ric_k1 <- getRIC(Sample_1)
+rt_s1 <- rtime(Sample1)
+ric_s1 <- getRIC(Sample1)
 
-ggplot(dplyr::filter(data.frame(x = rt_k1, y = ric_k1))) + 
+ggplot(dplyr::filter(data.frame(x = rt_s1, y = ric_s1))) + 
   geom_line(aes(x = x, y = y)) +
   scale_x_continuous(name = "Retention time (ms)", limits = c(55, 900)) +
   scale_y_continuous(name = "Intensity (a.u)")
@@ -147,9 +147,9 @@ dataset
 ```
 
 ```{r}
-ket1afterfilter <- dataset$getSample(sample = "220221_151456")
-ket1_smoothed <- smooth(
-  ket1afterfilter,
+Sample1 <- dataset$getSample(sample = "220221_151456")
+Sample1 <- smooth(
+  Sample1,
   rt_length_s = 3,
   dt_length_ms = 0.14,
   rt_order = 2,
@@ -165,8 +165,10 @@ dataset$realize()
 
 # Decimation
 
+As we are working with high density matrices a decimation of the data can help us to reduce the computational  time needed, in this case the retention time was not decimated but the drift time was, taking only one in every two points.
+
 ```{r}
-ket1_decimated <- decimate(ket1_smoothed, rt_factor = 1, dt_factor = 2)
+Sample1 <- decimate(Sample1, rt_factor = 1, dt_factor = 2)
 
 dataset <- decimate(dataset, rt_factor = 1, dt_factor = 2)
 ```
@@ -193,9 +195,7 @@ plotTIS(dataset, dt_range = c(7, 17))
 plotRIC(dataset)
 ```
 
-```{r alignment-starts-here}
-# Piecewise Multiplicative Correction
-
+```{r }
 manual_align <- function(object, referencepeaks) {
   tramo1 <- referencepeaks[which(referencepeaks$Peak == "Injection Point"), ]
   ref_tramo1 <- apply(tramo1[ ,c(3, 4)], 2, median)
@@ -243,19 +243,16 @@ manual_align <- function(object, referencepeaks) {
     fit_tramo4 <- rbind(fit_tramo4, solve(a, b))
   }
     
-  corrected_tramo4 <- as.vector(fit_tramo4[,1]) * as.vector(tramo4[, 3]$RetentionTime_s) + fit_tramo4[,2]
-    
-  og_datos <- c(as.vector(tramo1[, 3]$RetentionTime_s), 
-                as.vector(tramo2[, 3]$RetentionTime_s), 
-                as.vector(tramo3[, 3]$RetentionTime_s), 
-                as.vector(tramo4[, 3]$RetentionTime_s))
-  corrected_datos <- c(corrected_tramo1, corrected_tramo2, corrected_tramo3, corrected_tramo4)
-  plot(og_datos, corrected_datos, type = "b")
-    
-  #wd <- GCIMS:::CurrentHashedDir(object)
+  # corrected_tramo4 <- as.vector(fit_tramo4[,1]) * as.vector(tramo4[, 3]$RetentionTime_s) + fit_tramo4[,2]
+  #   
+  # og_datos <- c(as.vector(tramo1[, 3]$RetentionTime_s), 
+  #               as.vector(tramo2[, 3]$RetentionTime_s), 
+  #               as.vector(tramo3[, 3]$RetentionTime_s), 
+  #               as.vector(tramo4[, 3]$RetentionTime_s))
+  # corrected_datos <- c(corrected_tramo1, corrected_tramo2, corrected_tramo3, corrected_tramo4)
+  # plot(og_datos, corrected_datos, type = "b")
   d<-list()
   for(i in c(1:length(object$pData$SampleID))){
-    #sample2align <- readRDS(paste0(wd, "/",annotations$SampleID[i], ".rds"))
     sample2align<-object$getSample(annotations$SampleID[i])
     int_mat <- intensity(sample2align)
     ret_time <- rtime(sample2align)
@@ -279,7 +276,6 @@ manual_align <- function(object, referencepeaks) {
     ncol(int_corr) == length(rt_final)
     sample2align@retention_time <- rt_final
     sample2align@data <- int_corr
-    #saveRDS(sample2align, paste0(wd, "/",annotations$SampleID[i], ".rds"))
     d[[annotations$SampleID[i]]]<-sample2align
   }
   return(d)
@@ -313,9 +309,9 @@ First try one sample and optimize the `dt_peakwidth_range_ms` and `rt_peakwidth_
 Change values according to the width your peaks present in the plots. 
 
 ```{r}
-ket1 <- dataset$getSample(sample = "220221_151456")
-ket1ensenal <- findPeaks(
-  ket1,
+Sample1 <- dataset$getSample(sample = "220221_151456")
+Sample1 <- findPeaks(
+  Sample1,
   rt_length_s = 3,
   dt_length_ms = 0.14,
   verbose = TRUE,
@@ -329,9 +325,11 @@ ket1ensenal <- findPeaks(
   iou_overlap_threshold = 0.2,
   debug_idx = list(rt = 204, dt = 1167)
 )
-peak_list_ket1 <- peaks(ket1ensenal)
-plot(ket1ensenal, dt_range = c(9.2, 10), rt_range = c(50, 90)) + overlay_peaklist(peak_list_ket1, color_by = "PeakID")
+peak_list_Sample1 <- peaks(Sample1)
+plot(Sample1, dt_range = c(9.2, 10), rt_range = c(50, 90)) + overlay_peaklist(peak_list_Sample1, color_by = "PeakID")
 ```
+
+Then we use those parameters to find the peaks in all the samples
 
 ```{r}
 findPeaks(
@@ -355,15 +353,17 @@ head(peak_list)
 Plot all the peaks from all the dataset together, overlayed on a single sample:
 
 ```{r}
-Sample_1 <- dataset$getSample(sample = "220221_151456")
-plot(Sample_1, dt_range = c(7.5, 10), rt_range =  c(50, 200)) +overlay_peaklist(peaks(dataset), color_by = "SampleID")
+Sample1 <- dataset$getSample(sample = "220221_151456")
+plot(Sample1, dt_range = c(7.5, 10), rt_range =  c(50, 200)) +overlay_peaklist(peaks(dataset), color_by = "SampleID")
 ```
 
 
 
 # Clustering
 
-```{r clustering-section-starts-here}
+Then the peaks are clustered among samples
+
+```{r }
 peak_clustering <- clusterPeaks(
   peak_list,
   distance_method = "euclidean",
@@ -373,9 +373,7 @@ peak_clustering <- clusterPeaks(
   clustering = list(method = "hclust")
 )
 
-#plot(Sample_1)+ overlay_peaklist(peak_clustering$cluster_stats, color_by = "cluster")
 ```
-
 
 The peak list, with cluster ids can be plotted on top of a single sample:
 
@@ -383,30 +381,17 @@ The peak list, with cluster ids can be plotted on top of a single sample:
 peak_list_clustered <- peak_clustering$peak_list_clustered
 
 tt <- merge(peak_list_clustered, annotations, by = "SampleID") #peak_list_clustered
-Sample_1 <- dataset$getSample( sample = "220221_151456")
-plot(Sample_1) +overlay_peaklist(tt, color_by = "cluster") + theme(legend.position = "none")
+Sample1 <- dataset$getSample( sample = "220221_151456")
+plot(Sample1) +overlay_peaklist(tt, color_by = "cluster") + theme(legend.position = "none")
 ```
-
-
-FIXME: We need a proper API to plot this with a user friendly interface, but we
-can easily see there is some trouble with the clustering as of today (I'm working on it).
-
-```{r eval=FALSE, fig.height=10, fig.width=10, include=FALSE}
-plot(Sample_1) +overlay_peaklist(peak_list_clustered, 
-                                        color_by = "SampleID") +
-  lims(x = c(NA_real_, NA_real_), 
-      y = c(NA_real_, NA_real_)) +
-  facet_wrap(~cluster, scales = "free")
-```
-
-The resulting cluster sizes (median position of individual clusters) is not a good reference
-for integration. We are working on this.
 
 ```{r}
-plot(Sample_1) + overlay_peaklist(peak_clustering$cluster_stats, color_by = "cluster")
+plot(Sample1) + overlay_peaklist(peak_clustering$cluster_stats, color_by = "cluster")
 ```
 
 # Baseline correction
+
+Before integrating the peaks a baseline correction  must be performed to have a more accurate result
 
 ```{r}
 dataset <- estimateBaseline(
@@ -418,19 +403,9 @@ dataset <- estimateBaseline(
 dataset$realize()
 ```
 
-
-```{r eval=FALSE, fig.height=10, fig.width=10, include=FALSE}
-plt <- plot(Sample_1) + overlay_peaklist(dplyr::filter(peak_clustering$peak_list_clustered),
-  color_by = "SampleID",
-  col_prefix = "fixedsize_"
-) + 
-  lims(x = c(NA_real_, NA_real_), y = c(NA_real_, NA_real_)) +
-  facet_wrap(~cluster, scales = "free")
-plt
-```
-
-
 # Peak integration
+
+Each peak is then integrated and the result is added to the peak list
 
 ```{r}
 dataset <- integratePeaks(
@@ -439,22 +414,21 @@ dataset <- integratePeaks(
   integration_size_method = "fixed_size", 
   rip_saturation_threshold = 0.1
 )
-
+peak_list <- peaks(dataset)
 ```
-
-```{r}
-peak_list1 <- peaks(dataset)
-```
-
 
 # Build peak table
 
+Once we have the peas integrated and clustered we can make the peak table where each column is a cluster and each row a sample
+
 ```{r}
-peak_table <- peakTable(peak_list1, aggregate_conflicting_peaks = max)
+peak_table <- peakTable(peak_list, aggregate_conflicting_peaks = max)
 peak_table$peak_table_matrix[1:10,1:10]
 ```
 
 # Imputation
+
+To fill all the "NA" an imputation is needed
 
 ```{r}
 peak_table_imputed <- imputePeakTable(peak_table$peak_table_matrix, dataset, peak_clustering$cluster_stats)
@@ -462,6 +436,9 @@ peak_table_imputed[1:10,1:10]
 ```
 
 #Normalization 
+
+As in this case we are working with urine a normalization is needed because compounds can be more or less diluted; for this we perfrom a PQN normalization.
+
 ```{r }
 norm_pqn <- function(spectra) {
 num_samples <- nrow(spectra)
@@ -497,69 +474,14 @@ out
 }
 
 peak_table_imputed_normalized<-norm_pqn(as.matrix(peak_table_imputed[,-which(colnames(peak_table_imputed)=="NA")]))
+
 write.csv(peak_table_imputed_normalized$spectra,file.path(samples_directory,"peak_table_R.csv"))
 ```
 
+Finally we have a peak table with the values of the peaks for each cluster in each sample normalized
 
-```{r PLSDA}
-dataR<-as.matrix(peak_table_imputed_normalized$spectra)
-id<-annotations$ID
-labels<-as.numeric(annotations$Sex=="Male")
-pred <- data.frame()
-lvh<-list()
-for (i in unique(id)) {
-  Xtrain <- dataR[id!=i, ]
-  Ytrain<-labels[id!=i]
-  idL<-id[id!=i]
-  predL<-list()
-  for (k in unique(idL)){
-    XtrainL<-Xtrain[idL!=k,]
-    YtrainL<-Ytrain[idL!=k]
-    XtestL<-as.matrix(Xtrain[idL==k,])
-    YtestL<-Ytrain[idL==k]
-    if (length(XtestL[,1])!=length(YtestL)){
-      XtestL<-t(XtestL)
-    }
-    plsL<-pls::plsr(YtrainL ~ XtrainL, ncomp=10, scale=TRUE)
-    pL<-predict(plsL, XtestL,ncomp = 1:10)
-    predL$a<-rbind(predL$a,cbind(pL[,,1],YtestL))
-    predL$b<-rbind(predL$b,cbind(pL[,,2],YtestL))
-    predL$c<-rbind(predL$c,cbind(pL[,,3],YtestL))
-    predL$d<-rbind(predL$d,cbind(pL[,,4],YtestL))
-    predL$e<-rbind(predL$e,cbind(pL[,,5],YtestL))
-    predL$f<-rbind(predL$f,cbind(pL[,,6],YtestL))
-    predL$g<-rbind(predL$g,cbind(pL[,,7],YtestL))
-    predL$h<-rbind(predL$h,cbind(pL[,,8],YtestL))
-    predL$l<-rbind(predL$l,cbind(pL[,,9],YtestL))
-    predL$m<-rbind(predL$m,cbind(pL[,,10],YtestL))
-  }
-  aucL<-c(pROC::auc(response=predL$a[,2],predictor=predL$a[,1]),
-          pROC::auc(response=predL$b[,2],predictor=predL$b[,1]),
-          pROC::auc(response=predL$c[,2],predictor=predL$c[,1]),
-          pROC::auc(response=predL$d[,2],predictor=predL$d[,1]),
-          pROC::auc(response=predL$e[,2],predictor=predL$e[,1]),
-          pROC::auc(response=predL$f[,2],predictor=predL$f[,1]),
-          pROC::auc(response=predL$g[,2],predictor=predL$g[,1]),
-          pROC::auc(response=predL$h[,2],predictor=predL$h[,1]),
-          pROC::auc(response=predL$l[,2],predictor=predL$l[,1]),
-          pROC::auc(response=predL$m[,2],predictor=predL$m[,1]))
-  LV<-which.max(aucL)
-  lvh <- c(lvh, LV)
-  Xtrain <- dataR[id!=i,]
-  Ytrain <- labels[id!=i]
-  Xtest <- as.matrix(dataR[id==i,])
-  Ytest <- labels[id==i]
-  if (length(Xtest[,1])!=length(Ytest)){
-    Xtest<-t(Xtest)
-  }
-  
-  pls <- pls::plsr(Ytrain ~ Xtrain, ncomp=LV, scale=TRUE)
-  p<-predict(pls, Xtest,ncomp = LV)
-  pred<-rbind(pred,cbind(p[,,],Ytest))
-}
-
-AUC<-pROC::auc(response=pred$Ytest,predictor=pred$V1)
-
+```{r}
+peak_table_imputed_normalized$spectra[1:10,1:10]
 ```
 
 #Session Info:
