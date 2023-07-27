@@ -1,0 +1,568 @@
+---
+title: "GCIMS R Package case study"
+author: "S. Oller-Moreno*, C. Mallafré-Muro*, L. Fernández, E. Caballero, A. Blanco,  J. Gumà, A. Pardo, S. Marco"
+date: "`r format(Sys.Date(), '%F')`"
+abstract: >
+  An implementation of the GCIMS package, showing the most relevant functions and
+  a proposed workflow. This includes urine samples, adding sample
+  annotations, preprocessing the spectra, alignment, detecting peaks and regions
+  of interest (ROIs), clustering of ROIs across samples, peak integration and
+  building a peak table.
+vignette: >
+output: html_document
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+start_time <- Sys.time()
+library(BiocParallel)
+library(ggplot2)
+library(GCIMS)
+```
+
+
+The GCIMS package allows you to import your Gas Chromatography - Ion Mobility Spectrometry samples,
+preprocess them, align them one to each other and build a peak table with the relevant features.
+
+Enable parallelization of the workflow:
+
+```{r}
+show_progress_bar <- interactive() && is.null(getOption("knitr.in.progress"))
+
+# disable parallellization: (Useful for better error reporting)
+#register(SerialParam(progressbar = show_progress_bar), default = TRUE)
+
+# enable parallellization:
+workers<-parallel::detectCores()-4
+register(SnowParam(workers = workers, progressbar = show_progress_bar, exportglobals = FALSE), default = TRUE)
+```
+
+# Downloading the dataset
+
+The tutorial of the GCIMS R Package can be tested with a dataset available in Zenodo.
+This dataset includes a set of urine samples measured with a GC-IMS FlavourSpec.
+
+A .zip file with the urines will be downloaded in a temporal file and extracted in a new folder in the working directory
+```{r}
+samples_directory <- file.path(getwd(), "Urines")
+dir.create(samples_directory)
+tmp_zipfile<-tempfile(fileext = ".zip")
+curl::curl_download(url = "https://zenodo.org/record/7941230/files/Urines.zip?download=1", destfile = tmp_zipfile, quiet = FALSE)
+utils::unzip(tmp_zipfile,junkpaths = TRUE, exdir = samples_directory)
+```
+
+Other files needed to run this vignette will also be downloaded in the folder created
+
+```{r}
+curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
+                    destfile = file.path(samples_directory,"annotations.csv"), quiet = FALSE)
+curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
+                    destfile = file.path(samples_directory,"reference_peaks.csv"), quiet = FALSE)
+
+```
+Check that the files are downloaded:
+
+```{r}
+list.files(samples_directory)
+```
+
+# Import data
+
+The next step is to import all the samples information and maintain only the urines information. Remove the samples information which do not correspond to urines. 
+
+```{r message=FALSE}
+annotations <- readr::read_csv(file.path(samples_directory, "annotations.csv"))
+annotations
+```
+
+
+# Create a GCIMSDataset object
+
+The GCIMS package woks with GCIMSDataset objects, which needs to be created.
+
+```{r}
+dataset <- GCIMSDataset$new(
+  annotations,
+  base_dir = getwd(),
+  on_ram = FALSE)
+dataset
+```
+
+
+Most operations on the `dataset` are not executed until you need to get the actual samples or
+data. This is done to perform them in batch, more efficiently, if possible. However,
+you can manually `realize` the `GCIMSDataset` object so it executes all its pending operations.
+We can see how the "read_sample" pending operation becomes part of the dataset history:
+
+```{r}
+dataset$realize()
+dataset
+```
+
+
+```{r}
+Sample_1 <- dataset$getSample(sample = "220221_151456")
+
+dt_k1 <- dtime(Sample_1)
+tis_k1 <- getTIS(Sample_1)
+ggplot(dplyr::filter(data.frame(x = dt_k1, y = tis_k1), x >1)) + 
+  geom_line(aes(x = x, y = y)) +
+  scale_x_continuous(name = "Drift time (ms)", limits = c(7, 17)) +
+  scale_y_continuous(name = "Intensity (a.u)", trans = cubic_root_trans())
+
+rt_k1 <- rtime(Sample_1)
+ric_k1 <- getRIC(Sample_1)
+
+ggplot(dplyr::filter(data.frame(x = rt_k1, y = ric_k1))) + 
+  geom_line(aes(x = x, y = y)) +
+  scale_x_continuous(name = "Retention time (ms)", limits = c(55, 900)) +
+  scale_y_continuous(name = "Intensity (a.u)")
+```
+
+
+# Filter the retention and drift time of your samples - Smoothing 
+
+You can remove noise from your sample using a Savitzky-Golay filter, applied
+both in drift time and in retention time.
+
+The Savitzky-Golay has two main parameters: the filter length and the filter order.
+It is recommended to use a filter order of 2, but the filter length must be selected
+so it is large enough to remove noise but always smaller than the peak width to
+prevent distorting the peaks.
+
+You can apply the smoothing filter to a single IMS spectrum or to a single chromatogram
+to see how noise is removed and how peaks are not distorted. Tweak the filter lengths
+and, once you are happy, apply the smoothing filter to all the dataset.
+
+```{r}
+filterRt(dataset, rt = c(0, 1300)) # in s
+filterDt(dataset, dt = c(7, 17)) # in ms
+dataset
+```
+
+```{r}
+ket1afterfilter <- dataset$getSample(sample = "220221_151456")
+ket1_smoothed <- smooth(
+  ket1afterfilter,
+  rt_length_s = 3,
+  dt_length_ms = 0.14,
+  rt_order = 2,
+  dt_order = 2
+)
+```
+
+
+```{r}
+dataset <- smooth(dataset, rt_length_s = 3, dt_length_ms = 0.14)
+dataset$realize()
+```
+
+# Decimation
+
+```{r}
+ket1_decimated <- decimate(ket1_smoothed, rt_factor = 1, dt_factor = 2)
+
+dataset <- decimate(dataset, rt_factor = 1, dt_factor = 2)
+```
+
+# Alignment
+
+Pressure and temperature fluctuations as well as degradation of the chromatographic
+column are some of the causes of missalignments in the data, both in retention and
+drift time.
+
+In order to be able to compare samples to each other, we align the samples.
+
+The alignment will happen only in drift time. To correct the drift time, we will use 
+a Picewise multiplicative correction $t_d' = k  t_d$ according to a set of reference 
+peaks. This reference peaks are present in all the samples and are previously manually
+annotated.
+
+
+```{r}
+plotTIS(dataset, dt_range = c(7, 17))
+```
+
+```{r}
+plotRIC(dataset)
+```
+
+```{r alignment-starts-here}
+# Piecewise Multiplicative Correction
+
+manual_align <- function(object, referencepeaks) {
+  tramo1 <- referencepeaks[which(referencepeaks$Peak == "Injection Point"), ]
+  ref_tramo1 <- apply(tramo1[ ,c(3, 4)], 2, median)
+
+  fit_tramo1 <- NULL
+  for(i in c(1:dim(tramo1)[1])){
+    a <- rbind(c(0, 1), c(as.numeric(tramo1[i, 3]), 1))
+    b <- c(0, ref_tramo1[1])
+    fit_tramo1 <- rbind(fit_tramo1, solve(a, b))
+  }
+  
+  corrected_tramo1 <- as.vector(fit_tramo1[,1]) * as.vector(tramo1[, 3]$RetentionTime_s) + fit_tramo1[,2]
+  
+  tramo2 <- referencepeaks[which(referencepeaks$Peak == 70), ]
+  ref_tramo2 <- apply(tramo2[ ,c(3, 4)], 2, median)
+  
+  fit_tramo2 <- NULL
+  for(i in c(1:dim(tramo2)[1])){
+    a <- rbind(c(as.numeric(tramo1[i, 3]), 1), c(as.numeric(tramo2[i, 3]), 1))
+    b <- c(ref_tramo1[1], ref_tramo2[1])
+    fit_tramo2 <- rbind(fit_tramo2, solve(a, b))
+  }
+    
+  corrected_tramo2 <- as.vector(fit_tramo2[,1]) * as.vector(tramo2[, 3]$RetentionTime_s) + fit_tramo2[,2]
+    
+  tramo3 <- referencepeaks[which(referencepeaks$Peak == 200), ]
+  ref_tramo3 <- apply(tramo3[ ,c(3, 4)], 2, median)
+    
+  fit_tramo3 <- NULL
+  for(i in c(1:dim(tramo3)[1])){
+    a <- rbind(c(as.numeric(tramo2[i, 3]), 1), c(as.numeric(tramo3[i, 3]), 1))
+    b <- c(ref_tramo2[1], ref_tramo3[1])
+    fit_tramo3 <- rbind(fit_tramo3, solve(a, b))
+  }
+    
+  corrected_tramo3 <- as.vector(fit_tramo3[,1]) * as.vector(tramo3[, 3]$RetentionTime_s) + fit_tramo3[,2]
+    
+  tramo4 <- referencepeaks[which(referencepeaks$Peak == 600), ]
+  ref_tramo4 <- apply(tramo4[ ,c(3, 4)], 2, median)
+    
+  fit_tramo4 <- NULL
+  for(i in c(1:dim(tramo4)[1])){
+    a <- rbind(c(as.numeric(tramo3[i, 3]), 1), c(as.numeric(tramo4[i, 3]), 1))
+    b <- c(ref_tramo3[1], ref_tramo4[1])
+    fit_tramo4 <- rbind(fit_tramo4, solve(a, b))
+  }
+    
+  corrected_tramo4 <- as.vector(fit_tramo4[,1]) * as.vector(tramo4[, 3]$RetentionTime_s) + fit_tramo4[,2]
+    
+  og_datos <- c(as.vector(tramo1[, 3]$RetentionTime_s), 
+                as.vector(tramo2[, 3]$RetentionTime_s), 
+                as.vector(tramo3[, 3]$RetentionTime_s), 
+                as.vector(tramo4[, 3]$RetentionTime_s))
+  corrected_datos <- c(corrected_tramo1, corrected_tramo2, corrected_tramo3, corrected_tramo4)
+  plot(og_datos, corrected_datos, type = "b")
+    
+  #wd <- GCIMS:::CurrentHashedDir(object)
+  d<-list()
+  for(i in c(1:length(object$pData$SampleID))){
+    #sample2align <- readRDS(paste0(wd, "/",annotations$SampleID[i], ".rds"))
+    sample2align<-object$getSample(annotations$SampleID[i])
+    int_mat <- intensity(sample2align)
+    ret_time <- rtime(sample2align)
+
+    rt_final <- seq(from = 0, to = ref_tramo4[1], by = 0.39)
+  
+    og_ancla1 <- which(round(ret_time, digits = 0) == as.numeric(tramo1[i, 3]))[2]
+    og_ancla2 <- which(round(ret_time, digits = 0) == as.numeric(tramo2[i, 3]))[2]       
+    og_ancla3 <- which(round(ret_time, digits = 0) == as.numeric(tramo3[i, 3]))[2]
+    og_ancla4 <- which(round(ret_time, digits = 0) == as.numeric(tramo4[i, 3]))[2]
+
+    rt_corr1 <- ret_time[1 : og_ancla1]* fit_tramo1[i,1] + fit_tramo1[i,2]
+    rt_corr2 <- ret_time[(og_ancla1 + 1) : og_ancla2]* fit_tramo2[i,1] + fit_tramo2[i,2]
+    rt_corr3 <- ret_time[(og_ancla2 + 1) : og_ancla3]* fit_tramo3[i,1] + fit_tramo3[i,2]
+    rt_corr4 <- ret_time[(og_ancla3 + 1) : og_ancla4]* fit_tramo4[i,1] + fit_tramo4[i,2]
+    
+    rt_corr <- c(rt_corr1, rt_corr2, rt_corr3, rt_corr4)
+    int_corr <- t(apply(int_mat, 1, function(y) signal::interp1(rt_corr, y, rt_final)))
+    int_corr[is.na(int_corr)] <- int_mat[which(is.na(int_corr))]
+    ncol(int_mat) == length(ret_time)
+    ncol(int_corr) == length(rt_final)
+    sample2align@retention_time <- rt_final
+    sample2align@data <- int_corr
+    #saveRDS(sample2align, paste0(wd, "/",annotations$SampleID[i], ".rds"))
+    d[[annotations$SampleID[i]]]<-sample2align
+  }
+  return(d)
+}
+referencepeaks <- readr::read_csv(file.path(samples_directory, "reference_peaks.csv"))
+referencepeaks$DriftTime_ms <- as.numeric(referencepeaks$DriftTime_ms)
+d<-manual_align(dataset, referencepeaks)
+dataset<-GCIMSDataset_fromList(d,on_ram=FALSE)
+```
+
+```{r}
+dataset$realize()
+```
+
+```{r}
+plotTIS(dataset, dt_range = c(7, 17))
+```
+
+```{r}
+plotRIC(dataset, rt_range = c(50, 230))
+
+plotRIC(dataset)
+
+plotRIC(dataset, rt_range = c(180, 205))
+```
+
+
+# Peaks
+
+First try one sample and optimize the `dt_peakwidth_range_ms` and `rt_peakwidth_range_s` parameters there. 
+Change values according to the width your peaks present in the plots. 
+
+```{r}
+ket1 <- dataset$getSample(sample = "220221_151456")
+ket1ensenal <- findPeaks(
+  ket1,
+  rt_length_s = 3,
+  dt_length_ms = 0.14,
+  verbose = TRUE,
+  dt_peakwidth_range_ms = c(0.1, 0.4),
+  rt_peakwidth_range_s = c(5, 25),
+  dt_peakDetectionCWTParams = list(SNR.Th = 2, exclude0scaleAmpThresh = TRUE),
+  rt_peakDetectionCWTParams = list(SNR.Th = 2, exclude0scaleAmpThresh = TRUE),
+  dt_extension_factor = 0,
+  rt_extension_factor = 0,
+  exclude_rip = TRUE,
+  iou_overlap_threshold = 0.2,
+  debug_idx = list(rt = 204, dt = 1167)
+)
+peak_list_ket1 <- peaks(ket1ensenal)
+plot(ket1ensenal, dt_range = c(9.2, 10), rt_range = c(50, 90)) + overlay_peaklist(peak_list_ket1, color_by = "PeakID")
+```
+
+```{r}
+findPeaks(
+  dataset,
+  rt_length_s = 3,
+  dt_length_ms = 0.14,
+  verbose = TRUE,
+  dt_peakwidth_range_ms = c(0.15, 0.4),
+  rt_peakwidth_range_s = c(10, 25),
+  dt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  rt_peakDetectionCWTParams = list(exclude0scaleAmpThresh = TRUE),
+  dt_extension_factor = 0,
+  rt_extension_factor = 0,
+  exclude_rip = TRUE,
+  iou_overlap_threshold = 0.2
+)
+peak_list <- peaks(dataset)
+head(peak_list)
+```
+
+Plot all the peaks from all the dataset together, overlayed on a single sample:
+
+```{r}
+Sample_1 <- dataset$getSample(sample = "220221_151456")
+plot(Sample_1, dt_range = c(7.5, 10), rt_range =  c(50, 200)) +overlay_peaklist(peaks(dataset), color_by = "SampleID")
+```
+
+
+
+# Clustering
+
+```{r clustering-section-starts-here}
+peak_clustering <- clusterPeaks(
+  peak_list,
+  distance_method = "euclidean",
+  dt_cluster_spread_ms = 0.1,
+  rt_cluster_spread_s = 20,
+  distance_between_peaks_from_same_sample = 100,
+  clustering = list(method = "hclust")
+)
+
+#plot(Sample_1)+ overlay_peaklist(peak_clustering$cluster_stats, color_by = "cluster")
+```
+
+
+The peak list, with cluster ids can be plotted on top of a single sample:
+
+```{r}
+peak_list_clustered <- peak_clustering$peak_list_clustered
+
+tt <- merge(peak_list_clustered, annotations, by = "SampleID") #peak_list_clustered
+Sample_1 <- dataset$getSample( sample = "220221_151456")
+plot(Sample_1) +overlay_peaklist(tt, color_by = "cluster") + theme(legend.position = "none")
+```
+
+
+FIXME: We need a proper API to plot this with a user friendly interface, but we
+can easily see there is some trouble with the clustering as of today (I'm working on it).
+
+```{r eval=FALSE, fig.height=10, fig.width=10, include=FALSE}
+plot(Sample_1) +overlay_peaklist(peak_list_clustered, 
+                                        color_by = "SampleID") +
+  lims(x = c(NA_real_, NA_real_), 
+      y = c(NA_real_, NA_real_)) +
+  facet_wrap(~cluster, scales = "free")
+```
+
+The resulting cluster sizes (median position of individual clusters) is not a good reference
+for integration. We are working on this.
+
+```{r}
+plot(Sample_1) + overlay_peaklist(peak_clustering$cluster_stats, color_by = "cluster")
+```
+
+# Baseline correction
+
+```{r}
+dataset <- estimateBaseline(
+  dataset,
+  dt_peak_fwhm_ms = 0.2, 
+  dt_region_multiplier = 12,
+  rt_length_s = 200
+)
+dataset$realize()
+```
+
+
+```{r eval=FALSE, fig.height=10, fig.width=10, include=FALSE}
+plt <- plot(Sample_1) + overlay_peaklist(dplyr::filter(peak_clustering$peak_list_clustered),
+  color_by = "SampleID",
+  col_prefix = "fixedsize_"
+) + 
+  lims(x = c(NA_real_, NA_real_), y = c(NA_real_, NA_real_)) +
+  facet_wrap(~cluster, scales = "free")
+plt
+```
+
+
+# Peak integration
+
+```{r}
+dataset <- integratePeaks(
+  dataset, 
+  peak_clustering$peak_list, 
+  integration_size_method = "fixed_size", 
+  rip_saturation_threshold = 0.1
+)
+
+```
+
+```{r}
+peak_list1 <- peaks(dataset)
+```
+
+
+# Build peak table
+
+```{r}
+peak_table <- peakTable(peak_list1, aggregate_conflicting_peaks = max)
+peak_table$peak_table_matrix[1:10,1:10]
+```
+
+# Imputation
+
+```{r}
+peak_table_imputed <- imputePeakTable(peak_table$peak_table_matrix, dataset, peak_clustering$cluster_stats)
+peak_table_imputed[1:10,1:10]
+```
+
+#Normalization 
+```{r }
+norm_pqn <- function(spectra) {
+num_samples <- nrow(spectra)
+if (num_samples < 10) {
+  rlang::warn(message = c("There are not enough samples for reliably estimating the median spectra", "i" = paste0("The Probabalistic Quotient Normalization requires several samples ", "to compute the median spectra. Your number of samples is low"), "i" = paste0("Review your peaks before and after normalization to ","ensure there are no big distortions")))
+}
+# Normalize to the area
+areas <- rowSums(spectra)
+areas <- areas / stats::median(areas)
+if (num_samples == 1) {
+  # We have warned, and here there is nothing to do anymore
+  rlang::warn("PQN is meaningless with a single sample. We have normalized it to the area.")
+  out <- list(spectra = spectra / areas, norm_factor = areas)
+  return(out)
+}
+spectra2 <- spectra / areas
+# Move spectra above zero:
+if (any(spectra2 <= 0)) {
+  spectra2 <- spectra2 - min(spectra2)
+}
+# Median of each ppm: (We need multiple spectra in order to get a reliable median!)
+m <- matrixStats::colMedians(as.matrix(spectra2))
+# Divide at each ppm by its median:
+f <- spectra2 / m[col(spectra2)]
+f[which(is.na(f) == TRUE)] <- 0
+if (any(f <= 0)) {
+  f <- f - min(f)
+}
+f <- matrixStats::rowMedians(as.matrix(f))
+# Divide each spectra by its f value
+out <- list(spectra = spectra / (f * areas), norm_factor = f * areas)
+out
+}
+
+peak_table_imputed_normalized<-norm_pqn(as.matrix(peak_table_imputed[,-which(colnames(peak_table_imputed)=="NA")]))
+write.csv(peak_table_imputed_normalized$spectra,file.path(samples_directory,"peak_table_R.csv"))
+```
+
+
+```{r PLSDA}
+dataR<-as.matrix(peak_table_imputed_normalized$spectra)
+id<-annotations$ID
+labels<-as.numeric(annotations$Sex=="Male")
+pred <- data.frame()
+lvh<-list()
+for (i in unique(id)) {
+  Xtrain <- dataR[id!=i, ]
+  Ytrain<-labels[id!=i]
+  idL<-id[id!=i]
+  predL<-list()
+  for (k in unique(idL)){
+    XtrainL<-Xtrain[idL!=k,]
+    YtrainL<-Ytrain[idL!=k]
+    XtestL<-as.matrix(Xtrain[idL==k,])
+    YtestL<-Ytrain[idL==k]
+    if (length(XtestL[,1])!=length(YtestL)){
+      XtestL<-t(XtestL)
+    }
+    plsL<-pls::plsr(YtrainL ~ XtrainL, ncomp=10, scale=TRUE)
+    pL<-predict(plsL, XtestL,ncomp = 1:10)
+    predL$a<-rbind(predL$a,cbind(pL[,,1],YtestL))
+    predL$b<-rbind(predL$b,cbind(pL[,,2],YtestL))
+    predL$c<-rbind(predL$c,cbind(pL[,,3],YtestL))
+    predL$d<-rbind(predL$d,cbind(pL[,,4],YtestL))
+    predL$e<-rbind(predL$e,cbind(pL[,,5],YtestL))
+    predL$f<-rbind(predL$f,cbind(pL[,,6],YtestL))
+    predL$g<-rbind(predL$g,cbind(pL[,,7],YtestL))
+    predL$h<-rbind(predL$h,cbind(pL[,,8],YtestL))
+    predL$l<-rbind(predL$l,cbind(pL[,,9],YtestL))
+    predL$m<-rbind(predL$m,cbind(pL[,,10],YtestL))
+  }
+  aucL<-c(pROC::auc(response=predL$a[,2],predictor=predL$a[,1]),
+          pROC::auc(response=predL$b[,2],predictor=predL$b[,1]),
+          pROC::auc(response=predL$c[,2],predictor=predL$c[,1]),
+          pROC::auc(response=predL$d[,2],predictor=predL$d[,1]),
+          pROC::auc(response=predL$e[,2],predictor=predL$e[,1]),
+          pROC::auc(response=predL$f[,2],predictor=predL$f[,1]),
+          pROC::auc(response=predL$g[,2],predictor=predL$g[,1]),
+          pROC::auc(response=predL$h[,2],predictor=predL$h[,1]),
+          pROC::auc(response=predL$l[,2],predictor=predL$l[,1]),
+          pROC::auc(response=predL$m[,2],predictor=predL$m[,1]))
+  LV<-which.max(aucL)
+  lvh <- c(lvh, LV)
+  Xtrain <- dataR[id!=i,]
+  Ytrain <- labels[id!=i]
+  Xtest <- as.matrix(dataR[id==i,])
+  Ytest <- labels[id==i]
+  if (length(Xtest[,1])!=length(Ytest)){
+    Xtest<-t(Xtest)
+  }
+  
+  pls <- pls::plsr(Ytrain ~ Xtrain, ncomp=LV, scale=TRUE)
+  p<-predict(pls, Xtest,ncomp = LV)
+  pred<-rbind(pred,cbind(p[,,],Ytest))
+}
+
+AUC<-pROC::auc(response=pred$Ytest,predictor=pred$V1)
+
+```
+
+#Session Info:
+```{r }
+sessionInfo()
+```
