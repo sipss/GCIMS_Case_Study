@@ -19,6 +19,7 @@ knitr::opts_chunk$set(
 )
 ```
 
+
 ```{r setup}
 start_time <- Sys.time()
 library(BiocParallel)
@@ -39,8 +40,7 @@ show_progress_bar <- interactive() && is.null(getOption("knitr.in.progress"))
 #register(SerialParam(progressbar = show_progress_bar), default = TRUE)
 
 # enable parallellization:
-workers<-parallel::detectCores()-4
-register(SnowParam(workers = workers, progressbar = show_progress_bar, exportglobals = FALSE), default = TRUE)
+register(SnowParam(workers = parallel::detectCores()/2, progressbar = show_progress_bar, exportglobals = FALSE), default = TRUE)
 ```
 
 # Downloading the dataset
@@ -49,6 +49,7 @@ The tutorial of the GCIMS R Package can be tested with a dataset available in Ze
 This dataset includes a set of urine samples measured with a GC-IMS FlavourSpec.
 
 A .zip file with the urines will be downloaded in a temporal file and extracted in a new folder in the working directory
+
 ```{r}
 samples_directory <- file.path(getwd(), "Urines")
 dir.create(samples_directory)
@@ -57,34 +58,40 @@ curl::curl_download(url = "https://zenodo.org/record/7941230/files/Urines.zip?do
 utils::unzip(tmp_zipfile,junkpaths = TRUE, exdir = samples_directory)
 ```
 
-Other files needed to run this vignette will also be downloaded in the folder created
-
-```{r}
-curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
-                    destfile = file.path(samples_directory,"annotations.csv"), quiet = FALSE)
-curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
-                    destfile = file.path(samples_directory,"reference_peaks.csv"), quiet = FALSE)
-
-```
 Check that the files are downloaded:
 
 ```{r}
 list.files(samples_directory)
 ```
 
+Other files needed to run this vignette will also be downloaded in the working directory
+
+```{r}
+# curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
+#                     destfile = file.path(samples_directory,"annotations.csv"), quiet = FALSE)
+# curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
+#                     destfile = file.path(samples_directory,"reference_peaks.csv"), quiet = FALSE)
+
+curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
+                    destfile="annotations.csv",quiet = FALSE)
+curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
+                    destfile="reference_peaks.csv",quiet = FALSE)
+```
+
 # Import data
 
-The next step is to import all the samples information and maintain only the urines information. Remove the samples information which do not correspond to urines. 
+The next step is to import all the samples information.
 
 ```{r message=FALSE}
-annotations <- readr::read_csv(file.path(samples_directory, "annotations.csv"))
+#annotations <- readr::read_csv(file.path(samples_directory, "annotations.csv"))
+suppressMessages(annotations <- readr::read_csv("annotations.csv"))
 annotations
 ```
 
 
 # Create a GCIMSDataset object
 
-The GCIMS package woks with GCIMSDataset objects, which needs to be created.
+The GCIMS package works with GCIMSDataset objects, which needs to be created.
 
 ```{r}
 dataset <- GCIMSDataset$new(
@@ -243,8 +250,8 @@ manual_align <- function(object, referencepeaks) {
     fit_tramo4 <- rbind(fit_tramo4, solve(a, b))
   }
     
-  # corrected_tramo4 <- as.vector(fit_tramo4[,1]) * as.vector(tramo4[, 3]$RetentionTime_s) + fit_tramo4[,2]
-  #   
+  corrected_tramo4 <- as.vector(fit_tramo4[,1]) * as.vector(tramo4[, 3]$RetentionTime_s) + fit_tramo4[,2]
+     
   # og_datos <- c(as.vector(tramo1[, 3]$RetentionTime_s), 
   #               as.vector(tramo2[, 3]$RetentionTime_s), 
   #               as.vector(tramo3[, 3]$RetentionTime_s), 
@@ -280,7 +287,8 @@ manual_align <- function(object, referencepeaks) {
   }
   return(d)
 }
-referencepeaks <- readr::read_csv(file.path(samples_directory, "reference_peaks.csv"))
+#referencepeaks <- readr::read_csv(file.path(samples_directory, "reference_peaks.csv"))
+suppressMessages(referencepeaks <- readr::read_csv("reference_peaks.csv"))
 referencepeaks$DriftTime_ms <- as.numeric(referencepeaks$DriftTime_ms)
 d<-manual_align(dataset, referencepeaks)
 dataset<-GCIMSDataset_fromList(d,on_ram=FALSE)
@@ -474,17 +482,26 @@ out
 }
 
 peak_table_imputed_normalized<-norm_pqn(as.matrix(peak_table_imputed[,-which(colnames(peak_table_imputed)=="NA")]))
+```
 
-write.csv(peak_table_imputed_normalized$spectra,file.path(samples_directory,"peak_table_R.csv"))
+```{r }
+final_peak_table<-peak_table_imputed_normalized$spectra
+#write.csv(final_peak_table,file.path(samples_directory,"peak_table_R.csv"))
+write.csv(final_peak_table,"peak_table_R.csv")
 ```
 
 Finally we have a peak table with the values of the peaks for each cluster in each sample normalized
 
 ```{r}
-peak_table_imputed_normalized$spectra[1:10,1:10]
+final_peak_table[1:10,2:11]
+```
+
+```{r }
+Sys.time()-start_time
 ```
 
 #Session Info:
+
 ```{r }
 sessionInfo()
 ```
