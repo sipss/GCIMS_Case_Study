@@ -67,11 +67,6 @@ list.files(samples_directory)
 Other files needed to run this vignette will also be downloaded in the working directory
 
 ```{r}
-# curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
-#                     destfile = file.path(samples_directory,"annotations.csv"), quiet = FALSE)
-# curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
-#                     destfile = file.path(samples_directory,"reference_peaks.csv"), quiet = FALSE)
-
 curl::curl_download(url = "https://zenodo.org/record/7941230/files/annotations.csv?download=1", 
                     destfile="annotations.csv",quiet = FALSE)
 curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_peaks.csv?download=1", 
@@ -82,8 +77,7 @@ curl::curl_download(url = "https://zenodo.org/record/7941230/files/reference_pea
 
 The next step is to import all the samples information.
 
-```{r message=FALSE}
-#annotations <- readr::read_csv(file.path(samples_directory, "annotations.csv"))
+```{r }
 suppressMessages(annotations <- readr::read_csv("annotations.csv"))
 annotations
 ```
@@ -287,7 +281,6 @@ manual_align <- function(object, referencepeaks) {
   }
   return(d)
 }
-#referencepeaks <- readr::read_csv(file.path(samples_directory, "reference_peaks.csv"))
 suppressMessages(referencepeaks <- readr::read_csv("reference_peaks.csv"))
 referencepeaks$DriftTime_ms <- as.numeric(referencepeaks$DriftTime_ms)
 d<-manual_align(dataset, referencepeaks)
